@@ -19,6 +19,7 @@ import { RoutingDatabaseStack } from './routing-database-stack'
 import { RpcGatewayDashboardStack } from './rpc-gateway-dashboard'
 import { REQUEST_SOURCES } from '../../lib/util/requestSources'
 import { TESTNETS } from '../../lib/util/testNets'
+import { RpcGatewayFallbackStack } from './rpc-gateway-fallback-stack'
 
 export const CHAINS_NOT_MONITORED: ChainId[] = TESTNETS
 export const REQUEST_SOURCES_NOT_MONITORED = ['unknown']
@@ -44,7 +45,10 @@ export class RoutingAPIStack extends cdk.Stack {
       tenderlyUser: string
       tenderlyProject: string
       tenderlyAccessKey: string
+      tenderlyNodeApiKey: string
       unicornSecret: string
+      alchemyQueryKey?: string
+      decentralizedNetworkApiKey?: string
     }
   ) {
     super(parent, name, props)
@@ -64,13 +68,18 @@ export class RoutingAPIStack extends cdk.Stack {
       tenderlyUser,
       tenderlyProject,
       tenderlyAccessKey,
+      tenderlyNodeApiKey,
       unicornSecret,
+      alchemyQueryKey,
+      decentralizedNetworkApiKey,
     } = props
 
     const {
       poolCacheBucket,
       poolCacheBucket2,
+      poolCacheBucket3,
       poolCacheKey,
+      poolCacheGzipKey,
       poolCacheLambdaNameArray,
       tokenListCacheBucket,
       ipfsPoolCachingLambda,
@@ -81,6 +90,8 @@ export class RoutingAPIStack extends cdk.Stack {
       pinata_key,
       pinata_secret,
       hosted_zone,
+      alchemyQueryKey,
+      decentralizedNetworkApiKey,
     })
 
     const {
@@ -91,13 +102,15 @@ export class RoutingAPIStack extends cdk.Stack {
       cachedV3PoolsDynamoDb,
       cachedV2PairsDynamoDb,
       tokenPropertiesCachingDynamoDb,
-      rpcProviderStateDynamoDb,
+      rpcProviderHealthStateDynamoDb,
     } = new RoutingDatabaseStack(this, 'RoutingDatabaseStack', {})
 
     const { routingLambda, routingLambdaAlias } = new RoutingLambdaStack(this, 'RoutingLambdaStack', {
       poolCacheBucket,
       poolCacheBucket2,
+      poolCacheBucket3,
       poolCacheKey,
+      poolCacheGzipKey,
       jsonRpcProviders,
       tokenListCacheBucket,
       provisionedConcurrency,
@@ -106,6 +119,7 @@ export class RoutingAPIStack extends cdk.Stack {
       tenderlyUser,
       tenderlyProject,
       tenderlyAccessKey,
+      tenderlyNodeApiKey,
       routesDynamoDb,
       routesDbCachingRequestFlagDynamoDb,
       cachedRoutesDynamoDb,
@@ -113,7 +127,7 @@ export class RoutingAPIStack extends cdk.Stack {
       cachedV3PoolsDynamoDb,
       cachedV2PairsDynamoDb,
       tokenPropertiesCachingDynamoDb,
-      rpcProviderStateDynamoDb,
+      rpcProviderHealthStateDynamoDb,
       unicornSecret,
     })
 
@@ -164,8 +178,8 @@ export class RoutingAPIStack extends cdk.Stack {
           priority: 0,
           statement: {
             rateBasedStatement: {
-              // Limit is per 5 mins, i.e. 120 requests every 5 mins
-              limit: throttlingOverride ? parseInt(throttlingOverride) : 120,
+              // Limit is per 5 mins, i.e. 200 requests every 5 mins
+              limit: throttlingOverride ? parseInt(throttlingOverride) : 200,
               // API is of type EDGE so is fronted by Cloudfront as a proxy.
               // Use the ip set in X-Forwarded-For by Cloudfront, not the regular IP
               // which would just resolve to Cloudfronts IP.
@@ -230,6 +244,7 @@ export class RoutingAPIStack extends cdk.Stack {
     })
 
     new RpcGatewayDashboardStack(this, 'RpcGatewayDashboardStack')
+    new RpcGatewayFallbackStack(this, 'RpcGatewayFallbackStack', { rpcProviderHealthStateDynamoDb })
 
     const lambdaIntegration = new aws_apigateway.LambdaIntegration(routingLambdaAlias)
 

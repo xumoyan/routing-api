@@ -4,28 +4,21 @@ import * as aws_cloudwatch from 'aws-cdk-lib/aws-cloudwatch'
 import { Construct } from 'constructs'
 import _ from 'lodash'
 import { ID_TO_NETWORK_NAME } from '@uniswap/smart-order-router/build/main/util/chains'
-import { MAJOR_METHOD_NAMES } from '../../lib/rpc/SingleJsonRpcProvider'
+import { CallType, MAJOR_METHOD_NAMES } from '../../lib/rpc/SingleJsonRpcProvider'
 import { SUPPORTED_CHAINS } from '../../lib/handlers/injector-sor'
 import { TESTNETS } from '../../lib/util/testNets'
+import { getRpcGatewayEnabledChains } from '../../lib/rpc/ProdConfig'
+import { getProviderId } from '../../lib/rpc/utils'
 
-// TODO: Update this map as we launch more chains on RPC gateway
-const providerNameForChain: Map<ChainId, string[]> = new Map([
-  [ChainId.AVALANCHE, ['INFURA', 'QUIKNODE', 'NIRVANA']],
-  [ChainId.OPTIMISM, ['INFURA', 'QUIKNODE', 'NIRVANA', 'ALCHEMY']],
-  [ChainId.CELO, ['INFURA', 'QUIKNODE']],
-  [ChainId.BNB, ['QUIKNODE']],
-  [ChainId.POLYGON, ['INFURA', 'QUIKNODE', 'ALCHEMY']],
-  [ChainId.BASE, ['INFURA', 'QUIKNODE', 'ALCHEMY', 'NIRVANA']],
-  [ChainId.SEPOLIA, ['INFURA', 'ALCHEMY']],
-  [ChainId.ARBITRUM_ONE, ['INFURA', 'QUIKNODE', 'ALCHEMY', 'NIRVANA']],
-])
+const providerNameForChain: Map<ChainId, string[]> = getRpcGatewayEnabledChains()
 
 function getProviderNameForChain(chainId: ChainId): string[] {
-  if (providerNameForChain.has(chainId)) {
-    return providerNameForChain.get(chainId)!
-  } else {
-    return ['INFURA']
+  if (!providerNameForChain.has(chainId)) {
+    return []
   }
+  const providerNames = providerNameForChain.get(chainId)!
+  // Due to historical reason, we used 'QUIKNODE' rather than 'QUICKNODE' for metric names.
+  return providerNames.map((name) => (name === 'QUICKNODE' ? 'QUIKNODE' : name))
 }
 
 function getSelectMetricsForChain(chainId: ChainId) {
@@ -45,17 +38,55 @@ function getSelectMetricsForChain(chainId: ChainId) {
   return metrics
 }
 
-function getHealthScoreMetricsForChain(chainId: ChainId) {
+function getProviderDbHealthStateChangeForChain(chainId: ChainId) {
+  const metrics = []
+  for (const providerName of getProviderNameForChain(chainId)) {
+    const providerId = getProviderId(chainId, providerName)
+    metrics.push([
+      'Uniswap',
+      `RPC_GATEWAY_FALLBACK_${providerId}_INTO_UNHEALTHY`,
+      'Service',
+      'RoutingAPI',
+      {
+        id: `db_into_unhealthy_${chainId}_${providerName}`,
+        label: `${providerName} DB into UNHEALTHY ${ID_TO_NETWORK_NAME(chainId)}`,
+      },
+    ])
+    metrics.push([
+      'Uniswap',
+      `RPC_GATEWAY_FALLBACK_${providerId}_INTO_HEALTHY`,
+      'Service',
+      'RoutingAPI',
+      {
+        id: `db_into_healthy_${chainId}_${providerName}`,
+        label: `${providerName} DB into HEALTHY ${ID_TO_NETWORK_NAME(chainId)}`,
+      },
+    ])
+  }
+  return metrics
+}
+
+function getProviderHealthStateChangeForChain(chainId: ChainId) {
   const metrics = []
   for (const providerName of getProviderNameForChain(chainId)) {
     metrics.push([
       'Uniswap',
-      `RPC_GATEWAY_${chainId}_${providerName}_health_score`,
+      `RPC_GATEWAY_${chainId}_${providerName}_becomes_UNHEALTHY`,
       'Service',
       'RoutingAPI',
       {
-        id: `health_score_${chainId}_${providerName}`,
-        label: `${providerName} health score on ${ID_TO_NETWORK_NAME(chainId)}`,
+        id: `provider_into_unhealthy_${chainId}_${providerName}`,
+        label: `${providerName} into UNHEALTHY ${ID_TO_NETWORK_NAME(chainId)}`,
+      },
+    ])
+    metrics.push([
+      'Uniswap',
+      `RPC_GATEWAY_${chainId}_${providerName}_becomes_HEALTHY`,
+      'Service',
+      'RoutingAPI',
+      {
+        id: `provider_into_healthy_${chainId}_${providerName}`,
+        label: `${providerName} into HEALTHY ${ID_TO_NETWORK_NAME(chainId)}`,
       },
     ])
   }
@@ -66,16 +97,18 @@ function getLatencyMetricsForChain(chainId: ChainId) {
   const metrics = []
   for (const providerName of getProviderNameForChain(chainId)) {
     for (const methodName of MAJOR_METHOD_NAMES) {
-      metrics.push([
-        'Uniswap',
-        `RPC_GATEWAY_${chainId}_${providerName}_evaluated_latency_${methodName}`,
-        'Service',
-        'RoutingAPI',
-        {
-          id: `${methodName}_latency_${chainId}_${providerName}`,
-          label: `${providerName} ${methodName} latency on ${ID_TO_NETWORK_NAME(chainId)}`,
-        },
-      ])
+      for (const callType in CallType) {
+        metrics.push([
+          'Uniswap',
+          `RPC_GATEWAY_${chainId}_${providerName}_evaluated_${CallType[callType]}_latency_${methodName}`,
+          'Service',
+          'RoutingAPI',
+          {
+            id: `${methodName}_latency_${chainId}_${providerName}`,
+            label: `${providerName} ${methodName} ${callType} latency on ${ID_TO_NETWORK_NAME(chainId)}`,
+          },
+        ])
+      }
     }
   }
   return metrics
@@ -94,26 +127,6 @@ function getSuccessMetricsForChain(chainId: ChainId) {
         {
           id: `${methodName}_success_${chainId}_${providerName}`,
           label: `${providerName} ${methodName} success on ${ID_TO_NETWORK_NAME(chainId)}`,
-        },
-      ])
-    }
-  }
-  return metrics
-}
-
-function getHighLatencyMetricsForChain(chainId: ChainId) {
-  const metrics = []
-  const methodNames = ['call', 'send', 'getGasPrice', 'getBlockNumber']
-  for (const providerName of getProviderNameForChain(chainId)) {
-    for (const methodName of methodNames) {
-      metrics.push([
-        'Uniswap',
-        `RPC_GATEWAY_${chainId}_${providerName}_${methodName}_SUCCESS_HIGH_LATENCY`,
-        'Service',
-        'RoutingAPI',
-        {
-          id: `${methodName}_high_latency_${chainId}_${providerName}`,
-          label: `${providerName} ${methodName} high latency on ${ID_TO_NETWORK_NAME(chainId)}`,
         },
       ])
     }
@@ -203,23 +216,6 @@ function getDbSyncFailMetricsForChain(chainId: ChainId) {
       {
         id: `db_sync_fail_${chainId}_${providerName}`,
         label: `${providerName} db sync fail ${ID_TO_NETWORK_NAME(chainId)}`,
-      },
-    ])
-  }
-  return metrics
-}
-
-function getEvaluateLatencyMetricsForChain(chainId: ChainId) {
-  const metrics = []
-  for (const providerName of getProviderNameForChain(chainId)) {
-    metrics.push([
-      'Uniswap',
-      `RPC_GATEWAY_${chainId}_${providerName}_evaluate_latency`,
-      'Service',
-      'RoutingAPI',
-      {
-        id: `evaluate_latency_${chainId}_${providerName}`,
-        label: `${providerName} (Shadow) Evaluate latency for ${ID_TO_NETWORK_NAME(chainId)}`,
       },
     ])
   }
@@ -586,18 +582,39 @@ export class RpcGatewayDashboardStack extends cdk.NestedStack {
         width: 24,
         type: 'metric',
         properties: {
-          metrics: getHealthScoreMetricsForChain(chainId),
+          metrics: getProviderDbHealthStateChangeForChain(chainId),
           view: 'timeSeries',
           stacked: false,
           region,
           stat: 'Maximum',
           period: 300,
-          title: `Provider (negative) health score for ${ID_TO_NETWORK_NAME(chainId)}`,
+          title: `Provider DB health change for ${ID_TO_NETWORK_NAME(chainId)}`,
           setPeriodToTimeRange: true,
           yAxis: {
             left: {
               showUnits: false,
-              label: 'Score (in negative)',
+              label: 'DB health state changes',
+            },
+          },
+        },
+      },
+      {
+        height: 8,
+        width: 24,
+        type: 'metric',
+        properties: {
+          metrics: getProviderHealthStateChangeForChain(chainId),
+          view: 'timeSeries',
+          stacked: false,
+          region,
+          stat: 'Maximum',
+          period: 300,
+          title: `Provider health state for ${ID_TO_NETWORK_NAME(chainId)}`,
+          setPeriodToTimeRange: true,
+          yAxis: {
+            left: {
+              showUnits: false,
+              label: 'Health state changes',
             },
           },
         },
@@ -661,27 +678,6 @@ export class RpcGatewayDashboardStack extends cdk.NestedStack {
             left: {
               showUnits: false,
               label: 'Ms',
-            },
-          },
-        },
-      },
-      {
-        height: 8,
-        width: 24,
-        type: 'metric',
-        properties: {
-          metrics: getHighLatencyMetricsForChain(chainId),
-          view: 'timeSeries',
-          stacked: false,
-          region,
-          stat: 'Sum',
-          period: 300,
-          title: `Provider high latency occurrence for ${ID_TO_NETWORK_NAME(chainId)}`,
-          setPeriodToTimeRange: true,
-          yAxis: {
-            left: {
-              showUnits: false,
-              label: 'Requests',
             },
           },
         },
@@ -803,27 +799,6 @@ export class RpcGatewayDashboardStack extends cdk.NestedStack {
           stat: 'Sum',
           period: 300,
           title: `DB sync fail for ${ID_TO_NETWORK_NAME(chainId)}`,
-          setPeriodToTimeRange: true,
-          yAxis: {
-            left: {
-              showUnits: false,
-              label: 'Occurrences',
-            },
-          },
-        },
-      },
-      {
-        height: 8,
-        width: 24,
-        type: 'metric',
-        properties: {
-          metrics: getEvaluateLatencyMetricsForChain(chainId),
-          view: 'timeSeries',
-          stacked: false,
-          region,
-          stat: 'Sum',
-          period: 300,
-          title: `(Shadow) Evaluate latency call for ${ID_TO_NETWORK_NAME(chainId)}`,
           setPeriodToTimeRange: true,
           yAxis: {
             left: {

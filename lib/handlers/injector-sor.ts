@@ -3,37 +3,41 @@ import {
   CachingGasStationProvider,
   CachingTokenListProvider,
   CachingTokenProviderWithFallback,
+  CachingV2PoolProvider,
   CachingV3PoolProvider,
   EIP1559GasPriceProvider,
-  FallbackTenderlySimulator,
-  TenderlySimulator,
   EthEstimateGasSimulator,
+  FallbackTenderlySimulator,
   IGasPriceProvider,
   IMetric,
-  Simulator,
+  IOnChainQuoteProvider,
+  IRouteCachingProvider,
   ITokenListProvider,
+  ITokenPropertiesProvider,
   ITokenProvider,
   IV2PoolProvider,
   IV2SubgraphProvider,
   IV3PoolProvider,
   IV3SubgraphProvider,
   LegacyGasPriceProvider,
+  MIXED_ROUTE_QUOTER_V1_ADDRESSES,
+  NEW_QUOTER_V2_ADDRESSES,
   NodeJSCache,
   OnChainGasPriceProvider,
   OnChainQuoteProvider,
+  QUOTER_V2_ADDRESSES,
   setGlobalLogger,
+  Simulator,
   StaticV2SubgraphProvider,
   StaticV3SubgraphProvider,
-  TokenProvider,
+  TenderlySimulator,
   TokenPropertiesProvider,
+  TokenProvider,
+  TokenValidatorProvider,
   UniswapMulticallProvider,
   V2PoolProvider,
   V2QuoteProvider,
   V3PoolProvider,
-  IRouteCachingProvider,
-  CachingV2PoolProvider,
-  TokenValidatorProvider,
-  ITokenPropertiesProvider,
 } from '@uniswap/smart-order-router'
 import { TokenList } from '@uniswap/token-lists'
 import { default as bunyan, default as Logger } from 'bunyan'
@@ -54,14 +58,25 @@ import { OnChainTokenFeeFetcher } from '@uniswap/smart-order-router/build/main/p
 import { PortionProvider } from '@uniswap/smart-order-router/build/main/providers/portion-provider'
 import { GlobalRpcProviders } from '../rpc/GlobalRpcProviders'
 import { StaticJsonRpcProvider } from '@ethersproject/providers'
+import { TrafficSwitchOnChainQuoteProvider } from './quote/provider-migration/v3/traffic-switch-on-chain-quote-provider'
+import {
+  BLOCK_NUMBER_CONFIGS,
+  GAS_ERROR_FAILURE_OVERRIDES,
+  NON_OPTIMISTIC_CACHED_ROUTES_BATCH_PARAMS,
+  OPTIMISTIC_CACHED_ROUTES_BATCH_PARAMS,
+  RETRY_OPTIONS,
+  SUCCESS_RATE_FAILURE_OVERRIDES,
+} from '../util/onChainQuoteProviderConfigs'
+import { v4 } from 'uuid/index'
+import { chainProtocols } from '../cron/cache-config'
+import { Protocol } from '@uniswap/router-sdk'
+import { UniJsonRpcProvider } from '../rpc/UniJsonRpcProvider'
 
 export const SUPPORTED_CHAINS: ChainId[] = [
   ChainId.MAINNET,
   ChainId.OPTIMISM,
   ChainId.ARBITRUM_ONE,
-  ChainId.ARBITRUM_GOERLI,
   ChainId.POLYGON,
-  ChainId.POLYGON_MUMBAI,
   ChainId.SEPOLIA,
   ChainId.CELO,
   ChainId.CELO_ALFAJORES,
@@ -69,6 +84,8 @@ export const SUPPORTED_CHAINS: ChainId[] = [
   ChainId.AVALANCHE,
   ChainId.BASE,
   ChainId.BLAST,
+  ChainId.ZORA,
+  ChainId.ZKSYNC,
 ]
 const DEFAULT_TOKEN_LIST = 'https://gateway.ipfs.io/ipns/tokens.uniswap.org'
 
@@ -96,7 +113,7 @@ export type ContainerDependencies = {
   v2PoolProvider: IV2PoolProvider
   tokenProvider: ITokenProvider
   multicallProvider: UniswapMulticallProvider
-  onChainQuoteProvider?: OnChainQuoteProvider
+  onChainQuoteProvider?: IOnChainQuoteProvider
   v2QuoteProvider: V2QuoteProvider
   simulator: Simulator
   routeCachingProvider?: IRouteCachingProvider
@@ -109,6 +126,7 @@ export interface ContainerInjected {
   dependencies: {
     [chainId in ChainId]?: ContainerDependencies
   }
+  activityId?: string
 }
 
 export abstract class InjectorSOR<Router, QueryParams> extends Injector<
@@ -118,17 +136,21 @@ export abstract class InjectorSOR<Router, QueryParams> extends Injector<
   QueryParams
 > {
   public async buildContainerInjected(): Promise<ContainerInjected> {
+    const activityId = v4()
     const log: Logger = bunyan.createLogger({
       name: this.injectorName,
       serializers: bunyan.stdSerializers,
       level: bunyan.INFO,
+      activityId: activityId,
     })
     setGlobalLogger(log)
 
     try {
       const {
         POOL_CACHE_BUCKET_2,
+        POOL_CACHE_BUCKET_3,
         POOL_CACHE_KEY,
+        POOL_CACHE_GZIP_KEY,
         TOKEN_LIST_CACHE_BUCKET,
         ROUTES_TABLE_NAME,
         ROUTES_CACHING_REQUEST_FLAG_TABLE_NAME,
@@ -173,6 +195,7 @@ export abstract class InjectorSOR<Router, QueryParams> extends Injector<
           if (GlobalRpcProviders.getGlobalUniRpcProviders(log).has(chainId)) {
             // Use RPC gateway.
             provider = GlobalRpcProviders.getGlobalUniRpcProviders(log).get(chainId)!
+            ;(provider as UniJsonRpcProvider).shouldEvaluate = false
           } else {
             provider = new DefaultEVMClient({
               allProviders: [
@@ -234,11 +257,26 @@ export abstract class InjectorSOR<Router, QueryParams> extends Injector<
               CachingTokenListProvider.fromTokenList(chainId, UNSUPPORTED_TOKEN_LIST as TokenList, blockedTokenCache),
               (async () => {
                 try {
-                  const subgraphProvider = await V3AWSSubgraphProvider.EagerBuild(
-                    POOL_CACHE_BUCKET_2!,
-                    POOL_CACHE_KEY!,
-                    chainId
+                  const chainProtocol = chainProtocols.find(
+                    (chainProtocol) => chainProtocol.chainId === chainId && chainProtocol.protocol === Protocol.V3
                   )
+
+                  if (!chainProtocol) {
+                    throw new Error(`Chain protocol not found for chain ${chainId} and protocol ${Protocol.V3}`)
+                  }
+
+                  const subgraphProvider = await V3AWSSubgraphProvider.EagerBuild(
+                    POOL_CACHE_BUCKET_3!,
+                    POOL_CACHE_GZIP_KEY!,
+                    chainId
+                  ).catch(async (err) => {
+                    log.error(
+                      { err },
+                      'compressed s3 subgraph pool caching unavailable, fall back to the existing s3 subgraph pool caching'
+                    )
+
+                    return await V3AWSSubgraphProvider.EagerBuild(POOL_CACHE_BUCKET_2!, POOL_CACHE_KEY!, chainId)
+                  })
                   return subgraphProvider
                 } catch (err) {
                   log.error({ err }, 'AWS Subgraph Provider unavailable, defaulting to Static Subgraph Provider')
@@ -247,11 +285,26 @@ export abstract class InjectorSOR<Router, QueryParams> extends Injector<
               })(),
               (async () => {
                 try {
-                  const subgraphProvider = await V2AWSSubgraphProvider.EagerBuild(
-                    POOL_CACHE_BUCKET_2!,
-                    POOL_CACHE_KEY!,
-                    chainId
+                  const chainProtocol = chainProtocols.find(
+                    (chainProtocol) => chainProtocol.chainId === chainId && chainProtocol.protocol === Protocol.V2
                   )
+
+                  if (!chainProtocol) {
+                    throw new Error(`Chain protocol not found for chain ${chainId} and protocol ${Protocol.V2}`)
+                  }
+
+                  const subgraphProvider = await V2AWSSubgraphProvider.EagerBuild(
+                    POOL_CACHE_BUCKET_3!,
+                    POOL_CACHE_GZIP_KEY!,
+                    chainId
+                  ).catch(async (err) => {
+                    log.error(
+                      { err },
+                      'compressed s3 subgraph pool caching unavailable, fall back to the existing s3 subgraph pool caching'
+                    )
+
+                    return await V2AWSSubgraphProvider.EagerBuild(POOL_CACHE_BUCKET_2!, POOL_CACHE_KEY!, chainId)
+                  })
                   return subgraphProvider
                 } catch (err) {
                   return new StaticV2SubgraphProvider(chainId)
@@ -268,74 +321,64 @@ export abstract class InjectorSOR<Router, QueryParams> extends Injector<
 
           // Some providers like Infura set a gas limit per call of 10x block gas which is approx 150m
           // 200*725k < 150m
-          let quoteProvider: OnChainQuoteProvider | undefined = undefined
+          let quoteProvider: IOnChainQuoteProvider | undefined = undefined
           switch (chainId) {
+            case ChainId.SEPOLIA:
+            case ChainId.POLYGON_MUMBAI:
+            case ChainId.MAINNET:
+            case ChainId.POLYGON:
             case ChainId.BASE:
-            case ChainId.OPTIMISM:
-              quoteProvider = new OnChainQuoteProvider(
-                chainId,
-                provider,
-                multicall2Provider,
-                {
-                  retries: 2,
-                  minTimeout: 100,
-                  maxTimeout: 1000,
-                },
-                {
-                  multicallChunk: 110,
-                  gasLimitPerCall: 1_200_000,
-                  quoteMinSuccessRate: 0.1,
-                },
-                {
-                  gasLimitOverride: 3_000_000,
-                  multicallChunk: 45,
-                },
-                {
-                  gasLimitOverride: 3_000_000,
-                  multicallChunk: 45,
-                },
-                {
-                  baseBlockOffset: -25,
-                  rollback: {
-                    enabled: true,
-                    attemptsBeforeRollback: 1,
-                    rollbackBlockOffset: -20,
-                  },
-                }
-              )
-              break
             case ChainId.ARBITRUM_ONE:
-              quoteProvider = new OnChainQuoteProvider(
+            case ChainId.OPTIMISM:
+            case ChainId.BNB:
+            case ChainId.CELO:
+            case ChainId.AVALANCHE:
+            case ChainId.BLAST:
+            case ChainId.ZORA:
+              const currentQuoteProvider = new OnChainQuoteProvider(
                 chainId,
                 provider,
                 multicall2Provider,
-                {
-                  retries: 2,
-                  minTimeout: 100,
-                  maxTimeout: 1000,
+                RETRY_OPTIONS[chainId],
+                (optimisticCachedRoutes, useMixedRouteQuoter) => {
+                  const protocol = useMixedRouteQuoter ? Protocol.MIXED : Protocol.V3
+                  return optimisticCachedRoutes
+                    ? OPTIMISTIC_CACHED_ROUTES_BATCH_PARAMS[protocol][chainId]
+                    : NON_OPTIMISTIC_CACHED_ROUTES_BATCH_PARAMS[protocol][chainId]
                 },
-                {
-                  multicallChunk: 15,
-                  gasLimitPerCall: 15_000_000,
-                  quoteMinSuccessRate: 0.15,
-                },
-                {
-                  gasLimitOverride: 30_000_000,
-                  multicallChunk: 8,
-                },
-                {
-                  gasLimitOverride: 30_000_000,
-                  multicallChunk: 8,
-                },
-                {
-                  baseBlockOffset: 0,
-                  rollback: {
-                    enabled: true,
-                    attemptsBeforeRollback: 1,
-                    rollbackBlockOffset: -10,
-                  },
-                }
+                GAS_ERROR_FAILURE_OVERRIDES[chainId],
+                SUCCESS_RATE_FAILURE_OVERRIDES[chainId],
+                BLOCK_NUMBER_CONFIGS[chainId],
+                // We will only enable shadow sample mixed quoter on Base
+                (useMixedRouteQuoter: boolean) =>
+                  useMixedRouteQuoter ? MIXED_ROUTE_QUOTER_V1_ADDRESSES[chainId] : QUOTER_V2_ADDRESSES[chainId]
               )
+              const targetQuoteProvider = new OnChainQuoteProvider(
+                chainId,
+                provider,
+                multicall2Provider,
+                RETRY_OPTIONS[chainId],
+                (optimisticCachedRoutes, useMixedRouteQuoter) => {
+                  const protocol = useMixedRouteQuoter ? Protocol.MIXED : Protocol.V3
+                  return optimisticCachedRoutes
+                    ? OPTIMISTIC_CACHED_ROUTES_BATCH_PARAMS[protocol][chainId]
+                    : NON_OPTIMISTIC_CACHED_ROUTES_BATCH_PARAMS[protocol][chainId]
+                },
+                GAS_ERROR_FAILURE_OVERRIDES[chainId],
+                SUCCESS_RATE_FAILURE_OVERRIDES[chainId],
+                BLOCK_NUMBER_CONFIGS[chainId],
+                (useMixedRouteQuoter: boolean) =>
+                  useMixedRouteQuoter ? MIXED_ROUTE_QUOTER_V1_ADDRESSES[chainId] : NEW_QUOTER_V2_ADDRESSES[chainId],
+                (chainId: ChainId, useMixedRouteQuoter: boolean, optimisticCachedRoutes: boolean) =>
+                  useMixedRouteQuoter
+                    ? `ChainId_${chainId}_ShadowMixedQuoter_OptimisticCachedRoutes${optimisticCachedRoutes}_`
+                    : `ChainId_${chainId}_ShadowV3Quoter_OptimisticCachedRoutes${optimisticCachedRoutes}_`
+              )
+              quoteProvider = new TrafficSwitchOnChainQuoteProvider({
+                currentQuoteProvider: currentQuoteProvider,
+                targetQuoteProvider: targetQuoteProvider,
+                chainId: chainId,
+              })
               break
           }
 
@@ -346,13 +389,16 @@ export abstract class InjectorSOR<Router, QueryParams> extends Injector<
             process.env.TENDERLY_USER!,
             process.env.TENDERLY_PROJECT!,
             process.env.TENDERLY_ACCESS_KEY!,
+            process.env.TENDERLY_NODE_API_KEY!,
             v2PoolProvider,
             v3PoolProvider,
             provider,
             portionProvider,
             undefined,
             // The timeout for the underlying axios call to Tenderly, measured in milliseconds.
-            2.5 * 1000
+            2.5 * 1000,
+            20,
+            [ChainId.MAINNET]
           )
 
           const ethEstimateGasSimulator = new EthEstimateGasSimulator(
@@ -431,6 +477,7 @@ export abstract class InjectorSOR<Router, QueryParams> extends Injector<
 
       return {
         dependencies: dependenciesByChain,
+        activityId: activityId,
       }
     } catch (err) {
       log.fatal({ err }, `Fatal: Failed to build container`)
