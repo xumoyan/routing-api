@@ -45,7 +45,7 @@ export class UnsupportedChainError extends Error {
 
 export abstract class Injector<CInj, RInj extends BaseRInj, ReqBody, ReqQueryParams> {
   private containerInjected: CInj
-  public constructor(protected injectorName: string) {}
+  public constructor(protected injectorName: string) { }
 
   public async build() {
     this.containerInjected = await this.buildContainerInjected()
@@ -87,7 +87,7 @@ export abstract class APIGLambdaHandler<CInj, RInj extends BaseRInj, ReqBody, Re
   constructor(
     private handlerName: string,
     private injectorPromise: Promise<Injector<CInj, RInj, ReqBody, ReqQueryParams>>
-  ) {}
+  ) { }
 
   get handler(): APIGatewayProxyHandler {
     return async (event: APIGatewayProxyEvent, context: Context): Promise<APIGatewayProxyResult> => {
@@ -161,7 +161,7 @@ export abstract class APIGLambdaHandler<CInj, RInj extends BaseRInj, ReqBody, Re
 
           const { id } = requestInjected
 
-          ;({ log } = requestInjected)
+            ; ({ log } = requestInjected)
 
           let statusCode: number
           let body: Res
@@ -191,7 +191,7 @@ export abstract class APIGLambdaHandler<CInj, RInj extends BaseRInj, ReqBody, Re
                 { requestBody, requestQueryParams, requestDuration: Date.now() - requestStart },
                 'Handler returned 200'
               )
-              ;({ body, statusCode } = handleRequestResult)
+                ; ({ body, statusCode } = handleRequestResult)
             }
           } catch (err) {
             log.error({ err }, 'Unexpected error in handler')
@@ -224,7 +224,7 @@ export abstract class APIGLambdaHandler<CInj, RInj extends BaseRInj, ReqBody, Re
     )
   }
 
-  protected afterHandler(_: MetricsLogger, __: Res, ___: number): void {}
+  protected afterHandler(_: MetricsLogger, __: Res, ___: number): void { }
 
   public abstract handleRequest(
     params: HandleRequestParams<CInj, RInj, ReqBody, ReqQueryParams>
@@ -243,10 +243,10 @@ export abstract class APIGLambdaHandler<CInj, RInj extends BaseRInj, ReqBody, Re
     log: Logger
   ): Promise<
     | {
-        state: 'valid'
-        requestBody: ReqBody
-        requestQueryParams: ReqQueryParams
-      }
+      state: 'valid'
+      requestBody: ReqBody
+      requestQueryParams: ReqQueryParams
+    }
     | { state: 'invalid'; errorResponse: APIGatewayProxyResult }
   > {
     let bodyRaw: any

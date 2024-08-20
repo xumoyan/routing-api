@@ -43,7 +43,9 @@ export class RoutingCachingStack extends cdk.NestedStack {
     const chatBotTopic = chatbotSNSArn ? aws_sns.Topic.fromTopicArn(this, 'ChatbotTopic', chatbotSNSArn) : undefined
 
     // TODO: Remove and swap to the new bucket below. Kept around for the rollout, but all requests will go to bucket 2.
-    this.poolCacheBucket = new aws_s3.Bucket(this, 'PoolCacheBucket')
+    this.poolCacheBucket = new aws_s3.Bucket(this, 'PoolCacheBucket', {
+
+    })
     this.poolCacheBucket2 = new aws_s3.Bucket(this, 'PoolCacheBucket2')
 
     this.poolCacheBucket2.addLifecycleRule({
@@ -82,14 +84,6 @@ export class RoutingCachingStack extends cdk.NestedStack {
       )
     }
 
-    const region = cdk.Stack.of(this).region
-
-    const lambdaLayerVersion = aws_lambda.LayerVersion.fromLayerVersionArn(
-      this,
-      'InsightsLayerPools',
-      `arn:aws:lambda:${region}:580247275435:layer:LambdaInsightsExtension:14`
-    )
-
     // Spin up a new pool cache lambda for each config in chain X protocol
     for (let i = 0; i < chainProtocols.length; i++) {
       const { protocol, chainId, timeout } = chainProtocols[i]
@@ -108,7 +102,7 @@ export class RoutingCachingStack extends cdk.NestedStack {
             sourceMap: true,
           },
           description: `Pool Cache Lambda for Chain with ChainId ${chainId} and Protocol ${protocol}`,
-          layers: [lambdaLayerVersion],
+          layers: [],
           tracing: aws_lambda.Tracing.ACTIVE,
           environment: {
             POOL_CACHE_BUCKET: this.poolCacheBucket.bucketName,
@@ -179,11 +173,6 @@ export class RoutingCachingStack extends cdk.NestedStack {
         },
         description: 'IPFS Pool Cache Lambda',
         layers: [
-          aws_lambda.LayerVersion.fromLayerVersionArn(
-            this,
-            'InsightsLayerPoolsIPFS',
-            `arn:aws:lambda:${region}:580247275435:layer:LambdaInsightsExtension:14`
-          ),
         ],
         tracing: aws_lambda.Tracing.ACTIVE,
         environment: {
@@ -214,11 +203,6 @@ export class RoutingCachingStack extends cdk.NestedStack {
         },
         description: 'Clean IPFS Pool Cache Lambda',
         layers: [
-          aws_lambda.LayerVersion.fromLayerVersionArn(
-            this,
-            'InsightsLayerPoolsCleanIPFS',
-            `arn:aws:lambda:${region}:580247275435:layer:LambdaInsightsExtension:14`
-          ),
         ],
         tracing: aws_lambda.Tracing.ACTIVE,
         environment: {
@@ -264,11 +248,6 @@ export class RoutingCachingStack extends cdk.NestedStack {
         sourceMap: true,
       },
       layers: [
-        aws_lambda.LayerVersion.fromLayerVersionArn(
-          this,
-          'InsightsLayerTokenList',
-          `arn:aws:lambda:${region}:580247275435:layer:LambdaInsightsExtension:14`
-        ),
       ],
       description: 'Token List Cache Lambda',
       tracing: aws_lambda.Tracing.ACTIVE,

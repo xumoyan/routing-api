@@ -7,7 +7,7 @@ services:
       - "4566:4566"
       - "4571:4571"
     environment:
-      - SERVICES=dynamodb,s3,lambda,sns
+      - SERVICES=dynamodb,apigateway,lambda,rds,ssm,s3,cloudformation,iam,events,cloudwatch
       - DEBUG=1
       - DATA_DIR=/tmp/localstack_data 
     volumes:

@@ -3,7 +3,7 @@ import * as aws_dynamodb from 'aws-cdk-lib/aws-dynamodb'
 import { AttributeType, BillingMode } from 'aws-cdk-lib/aws-dynamodb'
 import { Construct } from 'constructs'
 
-export interface RoutingDatabaseStackProps extends cdk.NestedStackProps {}
+export interface RoutingDatabaseStackProps extends cdk.NestedStackProps { }
 
 export const DynamoDBTableProps = {
   RoutesDbTable: {

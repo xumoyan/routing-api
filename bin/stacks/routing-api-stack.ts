@@ -13,7 +13,6 @@ import * as aws_waf from 'aws-cdk-lib/aws-wafv2'
 import { Construct } from 'constructs'
 import { STAGE } from '../../lib/util/stage'
 import { RoutingCachingStack } from './routing-caching-stack'
-import { RoutingDashboardStack } from './routing-dashboard-stack'
 import { RoutingLambdaStack } from './routing-lambda-stack'
 import { RoutingDatabaseStack } from './routing-database-stack'
 import { RpcGatewayDashboardStack } from './rpc-gateway-dashboard'
@@ -71,9 +70,7 @@ export class RoutingAPIStack extends cdk.Stack {
       poolCacheBucket,
       poolCacheBucket2,
       poolCacheKey,
-      poolCacheLambdaNameArray,
       tokenListCacheBucket,
-      ipfsPoolCachingLambda,
     } = new RoutingCachingStack(this, 'RoutingCachingStack', {
       chatbotSNSArn,
       stage,
@@ -94,7 +91,7 @@ export class RoutingAPIStack extends cdk.Stack {
       rpcProviderStateDynamoDb,
     } = new RoutingDatabaseStack(this, 'RoutingDatabaseStack', {})
 
-    const { routingLambda, routingLambdaAlias } = new RoutingLambdaStack(this, 'RoutingLambdaStack', {
+    const { routingLambdaAlias } = new RoutingLambdaStack(this, 'RoutingLambdaStack', {
       poolCacheBucket,
       poolCacheBucket2,
       poolCacheKey,
@@ -141,6 +138,10 @@ export class RoutingAPIStack extends cdk.Stack {
         allowOrigins: aws_apigateway.Cors.ALL_ORIGINS,
         allowMethods: aws_apigateway.Cors.ALL_METHODS,
       },
+      endpointConfiguration: {
+        types: [aws_apigateway.EndpointType.REGIONAL],
+        vpcEndpoints: [],
+      }
     })
 
     const ipThrottlingACL = new aws_waf.CfnWebACL(this, 'RoutingAPIIPThrottlingACL', {
@@ -220,13 +221,6 @@ export class RoutingAPIStack extends cdk.Stack {
     new aws_waf.CfnWebACLAssociation(this, 'RoutingAPIIPThrottlingAssociation', {
       resourceArn: apiArn,
       webAclArn: ipThrottlingACL.getAtt('Arn').toString(),
-    })
-
-    new RoutingDashboardStack(this, 'RoutingDashboardStack', {
-      apiName: api.restApiName,
-      routingLambdaName: routingLambda.functionName,
-      poolCacheLambdaNameArray,
-      ipfsPoolCacheLambdaName: ipfsPoolCachingLambda ? ipfsPoolCachingLambda.functionName : undefined,
     })
 
     new RpcGatewayDashboardStack(this, 'RpcGatewayDashboardStack')

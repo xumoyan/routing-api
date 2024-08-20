@@ -36,6 +36,7 @@ export interface RoutingLambdaStackProps extends cdk.NestedStackProps {
   rpcProviderStateDynamoDb: aws_dynamodb.Table
   unicornSecret: string
 }
+
 export class RoutingLambdaStack extends cdk.NestedStack {
   public readonly routingLambda: aws_lambda_nodejs.NodejsFunction
   public readonly routingLambdaAlias: aws_lambda.Alias
@@ -90,8 +91,6 @@ export class RoutingLambdaStack extends cdk.NestedStack {
     tokenPropertiesCachingDynamoDb.grantReadWriteData(lambdaRole)
     rpcProviderStateDynamoDb.grantReadWriteData(lambdaRole)
 
-    const region = cdk.Stack.of(this).region
-
     this.routingLambda = new aws_lambda_nodejs.NodejsFunction(this, 'RoutingLambda2', {
       role: lambdaRole,
       runtime: aws_lambda.Runtime.NODEJS_18_X,
@@ -142,13 +141,7 @@ export class RoutingLambdaStack extends cdk.NestedStack {
         UNICORN_SECRET: unicornSecret,
         ...jsonRpcProviders,
       },
-      layers: [
-        aws_lambda.LayerVersion.fromLayerVersionArn(
-          this,
-          'InsightsLayer',
-          `arn:aws:lambda:${region}:580247275435:layer:LambdaInsightsExtension:14`
-        ),
-      ],
+      layers: [],
       tracing: aws_lambda.Tracing.ACTIVE,
       logRetention: RetentionDays.TWO_WEEKS,
     })
