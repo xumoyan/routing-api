@@ -34,6 +34,7 @@ import { CurrencyLookup } from '../CurrencyLookup'
 import { SwapOptionsFactory } from './SwapOptionsFactory'
 import { GlobalRpcProviders } from '../../rpc/GlobalRpcProviders'
 import semver from 'semver'
+import { Pair } from '@uniswap/v2-sdk'
 
 export class QuoteHandler extends APIGLambdaHandler<
   ContainerInjected,
@@ -508,12 +509,12 @@ export class QuoteHandler extends APIGLambdaHandler<
             amountOut: edgeAmountOut,
           })
         } else {
-          const reserve0 = nextPool.reserve0
-          const reserve1 = nextPool.reserve1
+          const reserve0 = (nextPool as Pair).reserve0
+          const reserve1 = (nextPool as Pair).reserve1
 
           curRoute.push({
             type: 'v2-pool',
-            address: v2PoolProvider.getPoolAddress(nextPool.token0, nextPool.token1).poolAddress,
+            address: v2PoolProvider.getPoolAddress((nextPool as Pair).token0, (nextPool as Pair).token1).poolAddress,
             tokenIn: {
               chainId: tokenIn.chainId,
               decimals: tokenIn.decimals.toString(),

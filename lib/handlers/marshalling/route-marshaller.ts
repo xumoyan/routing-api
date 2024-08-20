@@ -4,6 +4,7 @@ import { MarshalledToken, TokenMarshaller } from './token-marshaller'
 import { MarshalledPair, PairMarshaller } from './pair-marshaller'
 import { MarshalledPool, PoolMarshaller } from './pool-marshaller'
 import { Pool } from '@uniswap/v3-sdk'
+import { Pair } from '@uniswap/v2-sdk'
 
 export interface MarshalledV2Route {
   protocol: Protocol
@@ -52,9 +53,9 @@ export class RouteMarshaller {
           output: TokenMarshaller.marshal(route.output),
           pools: route.pools.map((tpool) => {
             if (tpool instanceof Pool) {
-              return PoolMarshaller.marshal(tpool)
+              return PoolMarshaller.marshal(tpool as Pool)
             } else {
-              return PairMarshaller.marshal(tpool)
+              return PairMarshaller.marshal(tpool as Pair)
             }
           }),
         }
@@ -92,6 +93,8 @@ export class RouteMarshaller {
           TokenMarshaller.unmarshal(mixedRoute.input),
           TokenMarshaller.unmarshal(mixedRoute.output)
         )
+      default:
+        throw new Error(`Unknown protocol ${marshalledRoute.protocol}`)
     }
   }
 }
