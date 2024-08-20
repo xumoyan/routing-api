@@ -1,4 +1,4 @@
-import { MAJOR_METHOD_NAMES, SingleJsonRpcProvider } from './SingleJsonRpcProvider'
+import { CallType, MAJOR_METHOD_NAMES, SingleJsonRpcProvider } from './SingleJsonRpcProvider'
 import { StaticJsonRpcProvider, TransactionRequest } from '@ethersproject/providers'
 import { isEmpty } from 'lodash'
 import { ChainId } from '@uniswap/sdk-core'
@@ -40,6 +40,10 @@ export class UniJsonRpcProvider extends StaticJsonRpcProvider {
   // Force attach a session id to this instance.
   // For later RPC calls, we will treat this as the session id, even if the RPC call itself doesn't specify one.
   attachedSessionId: string | null = null
+
+  // A hacky public mutable field to ensure all the shadow calls for provider health evaluation
+  // can only be invoked during the request processing path, but not during lambda initialization time
+  public shouldEvaluate: boolean = true
 
   /**
    *
@@ -150,7 +154,7 @@ export class UniJsonRpcProvider extends StaticJsonRpcProvider {
       }
     }
 
-    this.logProviderHealthScores()
+    this.logProviderHealthiness()
 
     const healthyProviders = this.providers.filter((provider) => provider.isHealthy())
     if (isEmpty(healthyProviders)) {
@@ -206,40 +210,44 @@ export class UniJsonRpcProvider extends StaticJsonRpcProvider {
 
   // Shadow call to other health providers that are not selected for performing current request
   // to gather their health states from time to time.
-  private checkOtherHealthyProvider(selectedProvider: SingleJsonRpcProvider, methodName: string, args: any[]) {
+  private async checkOtherHealthyProvider(
+    latency: number,
+    selectedProvider: SingleJsonRpcProvider,
+    methodName: string,
+    args: any[]
+  ): Promise<void> {
     const healthyProviders = this.providers.filter((provider) => provider.isHealthy())
     let count = 0
-    for (let provider of healthyProviders) {
-      if (provider.url === selectedProvider.url) {
-        continue
-      }
-      if (!MAJOR_METHOD_NAMES.includes(methodName)) {
-        continue
-      }
-      if (Math.random() >= this.latencyEvaluationSampleProb) {
-        continue
-      }
-      if (
-        !provider.isEvaluatingLatency() &&
-        provider.hasEnoughWaitSinceLastLatencyEvaluation(1000 * this.config.LATENCY_EVALUATION_WAIT_PERIOD_IN_S)
-      ) {
-        // Fire and forget. Don't care about its result and it won't throw.
-        // It's done this way because We don't want to block the return of this function.
-        provider.evaluateLatency(methodName, args)
+    await Promise.all(
+      healthyProviders.map(async (provider) => {
+        if (provider.url === selectedProvider.url) {
+          return
+        }
+        if (!MAJOR_METHOD_NAMES.includes(methodName)) {
+          return
+        }
+
+        // Within each provider latency shadow evaluation, we should do block I/O,
+        // because NodeJS runs in single thread, so it's important to make sure
+        // we benchmark the latencies correctly based on the single-threaded sequential evaluation.
+        await provider.evaluateLatency(methodName, args)
         count++
-      }
+      })
+    )
+
+    if (count > 0) {
+      selectedProvider.logLatencyMetrics(methodName, latency, CallType.LATENCY_EVALUATION)
     }
+
     this.log.debug(`Evaluated ${count} other healthy providers`)
   }
 
-  logProviderHealthScores() {
+  logProviderHealthiness() {
     for (const provider of this.providers.filter((provider) => provider.isHealthy())) {
-      this.log.debug(`Healthy provider, url: ${provider.url}, score: ${provider['healthScore']}`)
-      provider.logHealthMetrics()
+      this.log.debug(`Healthy provider: ${provider.url}`)
     }
     for (const provider of this.providers.filter((provider) => !provider.isHealthy())) {
-      this.log.debug(`Unhealthy provider, url: ${provider.url}, score: ${provider['healthScore']}`)
-      provider.logHealthMetrics()
+      this.log.debug(`Unhealthy provider: ${provider.url}`)
     }
   }
 
@@ -280,17 +288,33 @@ export class UniJsonRpcProvider extends StaticJsonRpcProvider {
     )
     const selectedProvider = this.selectPreferredProvider(sessionId)
     selectedProvider.logProviderSelection()
+    let latency = 0
     try {
-      return await (selectedProvider as any)[`${fnName}`](...args)
+      const start = Date.now()
+      const result = await (selectedProvider as any)[`${fnName}`](...args)
+      latency = Date.now() - start
+      return result
     } catch (error: any) {
-      this.log.error(JSON.stringify(error))
+      this.log.error({ error }, JSON.stringify(error))
       throw error
     } finally {
       this.lastUsedProvider = selectedProvider
-      if (this.config.ENABLE_SHADOW_LATENCY_EVALUATION) {
-        this.checkOtherHealthyProvider(selectedProvider, fnName, args)
+      if (this.shouldEvaluate) {
+        // We only want to probabilistically evaluate latency of other healthy providers,
+        // when there's session id populated. Session id being populated means it's from the request processing path.
+        if (
+          this.config.ENABLE_SHADOW_LATENCY_EVALUATION &&
+          Math.random() < this.latencyEvaluationSampleProb &&
+          sessionId
+        ) {
+          // fire and forget to evaluate latency of other healthy providers
+          this.checkOtherHealthyProvider(latency, selectedProvider, fnName, args)
+        }
+
+        if (Math.random() < this.healthCheckSampleProb && sessionId) {
+          this.checkUnhealthyProviders(selectedProvider)
+        }
       }
-      this.checkUnhealthyProviders(selectedProvider)
     }
   }
 

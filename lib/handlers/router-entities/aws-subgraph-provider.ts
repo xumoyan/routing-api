@@ -3,6 +3,8 @@ import {
   IV2SubgraphProvider,
   IV3SubgraphProvider,
   log,
+  metric,
+  MetricLoggerUnit,
   V2SubgraphPool,
   V3SubgraphPool,
 } from '@uniswap/smart-order-router'
@@ -10,6 +12,8 @@ import { S3 } from 'aws-sdk'
 import { ChainId } from '@uniswap/sdk-core'
 import NodeCache from 'node-cache'
 import { S3_POOL_CACHE_KEY } from '../../util/pool-cache-key'
+import { PoolCachingFilePrefixes } from '../../util/poolCachingFilePrefixes'
+import * as zlib from 'zlib'
 
 const POOL_CACHE = new NodeCache({ stdTTL: 240, useClones: false })
 const LOCAL_POOL_CACHE_KEY = (chainId: ChainId, protocol: Protocol) => `pools${chainId}#${protocol}`
@@ -54,7 +58,17 @@ export const cachePoolsFromS3 = async <TSubgraphPool>(
 
   let result
   try {
+    const before = Date.now()
     result = await s3.getObject({ Key: key, Bucket: bucket }).promise()
+    const after = Date.now()
+
+    // Since we don't set the s3 request timeout, it's possible that the lambda timeout, because we even see latency metrics getting logged
+    // In case of increased lambda timeout due to cold start, we expect to see the sampling count of this latency metric to decrease
+    metric.putMetric(`S3GetObjectLatency_key_${key}`, after - before, MetricLoggerUnit.Milliseconds)
+    log.info(
+      { bucket, key },
+      `Downloaded s3 object for ${protocol} on ${chainId} with latency ${after - before} milliseconds.`
+    )
   } catch (err) {
     log.error({ bucket, key, err }, `Failed to get pools from S3 for ${protocol} on chain ${chainId}`)
     throw new Error(`Failed to get pools from S3 for ${protocol} on chain ${chainId}`)
@@ -66,9 +80,26 @@ export const cachePoolsFromS3 = async <TSubgraphPool>(
     throw new Error(`Could not get subgraph pool cache from S3 for protocol ${protocol} on chain ${chainId}`)
   }
 
-  const pools = JSON.parse(poolsBuffer.toString('utf-8')) as TSubgraphPool[]
+  let poolString
 
-  log.info({ bucket, key }, `Got subgraph pools from S3 for protocol ${protocol} on ${chainId}. Num: ${pools.length}`)
+  if (key.startsWith(PoolCachingFilePrefixes.GzipText)) {
+    poolString = zlib.inflateSync(poolsBuffer as Buffer).toString('utf-8')
+  } else {
+    poolString = poolsBuffer.toString('utf-8')
+  }
+
+  const before = Date.now()
+  const pools = JSON.parse(poolString) as TSubgraphPool[]
+  const after = Date.now()
+
+  log.info(
+    { bucket, key },
+    `Got subgraph pools from S3 for protocol ${protocol} on ${chainId}. Num: ${pools.length} with latency ${
+      after - before
+    } milliseconds.`
+  )
+
+  metric.putMetric(`S3GetObjectParseLatency_key_${key}`, after - before, MetricLoggerUnit.Milliseconds)
 
   POOL_CACHE.set<TSubgraphPool[]>(LOCAL_POOL_CACHE_KEY(chainId, protocol), pools)
 

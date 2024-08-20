@@ -17,7 +17,9 @@ import { RetentionDays } from 'aws-cdk-lib/aws-logs'
 export interface RoutingLambdaStackProps extends cdk.NestedStackProps {
   poolCacheBucket: aws_s3.Bucket
   poolCacheBucket2: aws_s3.Bucket
+  poolCacheBucket3: aws_s3.Bucket
   poolCacheKey: string
+  poolCacheGzipKey: string
   jsonRpcProviders: { [chainName: string]: string }
   tokenListCacheBucket: aws_s3.Bucket
   provisionedConcurrency: number
@@ -25,6 +27,7 @@ export interface RoutingLambdaStackProps extends cdk.NestedStackProps {
   tenderlyUser: string
   tenderlyProject: string
   tenderlyAccessKey: string
+  tenderlyNodeApiKey: string
   chatbotSNSArn?: string
   routesDynamoDb: aws_dynamodb.Table
   routesDbCachingRequestFlagDynamoDb: aws_dynamodb.Table
@@ -33,7 +36,7 @@ export interface RoutingLambdaStackProps extends cdk.NestedStackProps {
   cachedV3PoolsDynamoDb: aws_dynamodb.Table
   cachedV2PairsDynamoDb: aws_dynamodb.Table
   tokenPropertiesCachingDynamoDb: aws_dynamodb.Table
-  rpcProviderStateDynamoDb: aws_dynamodb.Table
+  rpcProviderHealthStateDynamoDb: aws_dynamodb.Table
   unicornSecret: string
 }
 
@@ -46,7 +49,9 @@ export class RoutingLambdaStack extends cdk.NestedStack {
     const {
       poolCacheBucket,
       poolCacheBucket2,
+      poolCacheBucket3,
       poolCacheKey,
+      poolCacheGzipKey,
       jsonRpcProviders,
       tokenListCacheBucket,
       provisionedConcurrency,
@@ -55,6 +60,7 @@ export class RoutingLambdaStack extends cdk.NestedStack {
       tenderlyUser,
       tenderlyProject,
       tenderlyAccessKey,
+      tenderlyNodeApiKey,
       routesDynamoDb,
       routesDbCachingRequestFlagDynamoDb,
       cachedRoutesDynamoDb,
@@ -62,7 +68,7 @@ export class RoutingLambdaStack extends cdk.NestedStack {
       cachedV3PoolsDynamoDb,
       cachedV2PairsDynamoDb,
       tokenPropertiesCachingDynamoDb,
-      rpcProviderStateDynamoDb,
+      rpcProviderHealthStateDynamoDb,
       unicornSecret,
     } = props
 
@@ -81,6 +87,7 @@ export class RoutingLambdaStack extends cdk.NestedStack {
     })
     poolCacheBucket.grantRead(lambdaRole)
     poolCacheBucket2.grantRead(lambdaRole)
+    poolCacheBucket3.grantRead(lambdaRole)
     tokenListCacheBucket.grantRead(lambdaRole)
     routesDynamoDb.grantReadWriteData(lambdaRole)
     routesDbCachingRequestFlagDynamoDb.grantReadWriteData(lambdaRole)
@@ -89,7 +96,7 @@ export class RoutingLambdaStack extends cdk.NestedStack {
     cachedV3PoolsDynamoDb.grantReadWriteData(lambdaRole)
     cachedV2PairsDynamoDb.grantReadWriteData(lambdaRole)
     tokenPropertiesCachingDynamoDb.grantReadWriteData(lambdaRole)
-    rpcProviderStateDynamoDb.grantReadWriteData(lambdaRole)
+    rpcProviderHealthStateDynamoDb.grantReadWriteData(lambdaRole)
 
     this.routingLambda = new aws_lambda_nodejs.NodejsFunction(this, 'RoutingLambda2', {
       role: lambdaRole,
@@ -111,16 +118,19 @@ export class RoutingLambdaStack extends cdk.NestedStack {
 
       description: 'Routing Lambda',
       environment: {
-        VERSION: '17',
+        VERSION: '25',
         NODE_OPTIONS: '--enable-source-maps',
         POOL_CACHE_BUCKET: poolCacheBucket.bucketName,
         POOL_CACHE_BUCKET_2: poolCacheBucket2.bucketName,
+        POOL_CACHE_BUCKET_3: poolCacheBucket3.bucketName,
         POOL_CACHE_KEY: poolCacheKey,
+        POOL_CACHE_GZIP_KEY: poolCacheGzipKey,
         TOKEN_LIST_CACHE_BUCKET: tokenListCacheBucket.bucketName,
         ETH_GAS_STATION_INFO_URL: ethGasStationInfoUrl,
         TENDERLY_USER: tenderlyUser,
         TENDERLY_PROJECT: tenderlyProject,
         TENDERLY_ACCESS_KEY: tenderlyAccessKey,
+        TENDERLY_NODE_API_KEY: tenderlyNodeApiKey,
         // WARNING: Dynamo table name should be the tableinstance.name, e.g. routesDynamoDb.tableName.
         //          But we tried and had seen lambd version error:
         //          The following resource(s) failed to create: [RoutingLambda2CurrentVersion49A1BB948389ce4f9c26b15e2ccb07b4c1bab726].
@@ -133,7 +143,7 @@ export class RoutingLambdaStack extends cdk.NestedStack {
         CACHING_REQUEST_FLAG_TABLE_NAME: DynamoDBTableProps.CachingRequestFlagDynamoDbTable.Name,
         CACHED_V3_POOLS_TABLE_NAME: DynamoDBTableProps.V3PoolsDynamoDbTable.Name,
         V2_PAIRS_CACHE_TABLE_NAME: DynamoDBTableProps.V2PairsDynamoCache.Name,
-        RPC_PROVIDER_HEALTH_TABLE_NAME: DynamoDBTableProps.RpcProviderStateDbTable.Name,
+        RPC_PROVIDER_HEALTH_TABLE_NAME: DynamoDBTableProps.RpcProviderHealthStateDbTable.Name,
 
         // tokenPropertiesCachingDynamoDb.tableName is the correct format.
         // we will start using the correct ones going forward
